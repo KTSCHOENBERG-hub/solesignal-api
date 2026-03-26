@@ -12,7 +12,7 @@
     "cors": "^2.8.5",
     "helmet": "^8.0.0",
     "express-rate-limit": "^7.4.0",
-    "sneaks-api": "^1.2.4",
+    "sneaks-api": "^1.2.3",
     "node-cache": "^5.1.2"
   },
   "engines": {
