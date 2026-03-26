@@ -1,7 +1,7 @@
 {
-  "name": "solesignal-api",
+  "name": "soleping-api",
   "version": "1.0.0",
-  "description": "SoleSignal — Live sneaker resale intelligence API",
+  "description": "SolePing — Live sneaker resale intelligence API",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -19,3 +19,4 @@
     "node": ">=18.0.0"
   }
 }
+
