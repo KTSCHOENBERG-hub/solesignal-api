@@ -13,16 +13,8 @@ const sneaks = new SneaksAPI();
 const cache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
 const PORT = process.env.PORT || 3001;
 
-const ALLOWED = [
-  "http://localhost:3000",
-  "http://localhost:5173",
-  "https://meethailo.com",
-  "https://www.meethailo.com",
-  process.env.FRONTEND_URL
-].filter(Boolean);
-
 app.use(helmet());
-app.use(cors({ origin: ALLOWED }));
+app.use(cors({ origin: "*" }));
 app.use(express.json());
 app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 100, standardHeaders: true, legacyHeaders: false }));
 
