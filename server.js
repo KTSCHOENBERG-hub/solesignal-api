@@ -14,7 +14,7 @@ const sneaks = new SneaksAPI();
 const cache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
 const PORT = process.env.PORT || 3001;
 
-app.use(helmet());
+app.use(helmet({ frameguard: false, contentSecurityPolicy: false }));
 app.use(cors({ origin: "*" }));
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
