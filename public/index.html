@@ -176,6 +176,6 @@ function closePanel(e){if(e&&e.target!==document.getElementById('panel-overlay')
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closePanel()});
 function showLoading(msg){document.getElementById('table-area').innerHTML='<div class="loading-state"><div class="spinner"></div><span>'+msg+'</span></div>'}
 function showError(msg,detail){document.getElementById('table-area').innerHTML='';document.getElementById('error-area').innerHTML='<div class="error-box"><strong>'+msg+'</strong>'+(detail?'<span style="font-size:11px">'+detail+'</span>':'')+'</div>'}
-<\/script>
+</script>
 </body>
   </html>
