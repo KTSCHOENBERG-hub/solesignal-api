@@ -18,11 +18,6 @@ app.set('trust proxy', 1);
 const limiter = rateLimit({ windowMs: 60000, max: 100, standardHeaders: true, legacyHeaders: false });
 app.use('/api/', limiter);
 
-// --- StockX Algolia Config ---
-const ALGOLIA_URL = 'https://xw7sbct9v6-dsn.algolia.net/1/indexes/products/query';
-const ALGOLIA_APP_ID = 'XW7SBCT9V6';
-const ALGOLIA_API_KEY = '6b5e76b49705eb9f51a06571571c4a94';
-
 // --- Marketplace Fee Structures (real 2024-2025 rates) ---
 const MARKETPLACE_FEES = {
   stockx: {
@@ -45,52 +40,126 @@ const MARKETPLACE_FEES = {
   }
 };
 
-// --- Search StockX via Algolia ---
+// --- Browser-like headers for StockX SSR fetch ---
+const STOCKX_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+  'Accept-Language': 'en-US,en;q=0.9',
+  'Accept-Encoding': 'gzip, deflate, br',
+  'Cache-Control': 'no-cache',
+  'Pragma': 'no-cache',
+  'Sec-Fetch-Dest': 'document',
+  'Sec-Fetch-Mode': 'navigate',
+  'Sec-Fetch-Site': 'none',
+  'Sec-Fetch-User': '?1',
+  'Upgrade-Insecure-Requests': '1'
+};
+
+// --- Search StockX via SSR (scrape __NEXT_DATA__) ---
 async function searchStockX(query, limit = 20) {
   const cacheKey = `sx:${query}:${limit}`;
   const cached = cache.get(cacheKey);
   if (cached) return cached;
 
-  const response = await fetch(ALGOLIA_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Algolia-Application-Id': ALGOLIA_APP_ID,
-      'X-Algolia-API-Key': ALGOLIA_API_KEY
-    },
-    body: JSON.stringify({
-      params: `query=${encodeURIComponent(query)}&hitsPerPage=${limit}&facets=*`
-    })
+  const url = `https://stockx.com/search?s=${encodeURIComponent(query)}`;
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: STOCKX_HEADERS,
+    redirect: 'follow'
   });
 
-  if (!response.ok) throw new Error(`Algolia ${response.status}`);
-  const data = await response.json();
-  const results = (data.hits || []).map(transformHit).filter(s => s.name !== 'Unknown');
+  if (!response.ok) throw new Error(`StockX SSR ${response.status}`);
+  const html = await response.text();
+
+  // Extract __NEXT_DATA__ JSON from SSR HTML
+  const match = html.match(/<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/);
+  if (!match) throw new Error('No __NEXT_DATA__ found in StockX response');
+
+  let nextData;
+  try {
+    nextData = JSON.parse(match[1]);
+  } catch (e) {
+    throw new Error('Failed to parse __NEXT_DATA__ JSON');
+  }
+
+  // Navigate to browse results - find the query that has browse data
+  let edges = [];
+  try {
+    const queries = nextData.props.pageProps.req.appContext.states.query.value.queries;
+    for (const q of queries) {
+      const browse = q?.state?.data?.browse;
+      if (browse && browse.results && browse.results.edges) {
+        edges = browse.results.edges;
+        break;
+      }
+    }
+  } catch (e) {
+    // Try alternative path structures
+    try {
+      const dehydratedState = nextData.props.pageProps.dehydratedState;
+      if (dehydratedState && dehydratedState.queries) {
+        for (const q of dehydratedState.queries) {
+          const browse = q?.state?.data?.browse;
+          if (browse && browse.results && browse.results.edges) {
+            edges = browse.results.edges;
+            break;
+          }
+        }
+      }
+    } catch (e2) {
+      // ignore
+    }
+  }
+
+  if (edges.length === 0) {
+    // Last resort: try to find browse results anywhere in the JSON
+    const jsonStr = match[1];
+    const browseMatch = jsonStr.match(/"browse"\s*:\s*\{[^]*?"edges"\s*:\s*\[/);
+    if (browseMatch) {
+      // Fallback - return empty rather than crash
+      console.warn('Found browse key but could not parse edges');
+    }
+    // Return empty results rather than throwing
+    cache.set(cacheKey, []);
+    return [];
+  }
+
+  const results = edges.slice(0, limit).map(edge => transformSSRNode(edge.node)).filter(s => s.name !== 'Unknown');
   cache.set(cacheKey, results);
   return results;
 }
 
-// --- Transform Algolia Hit to Clean Object ---
-function transformHit(hit) {
-  // Retail price - try multiple fields
+// --- Transform SSR Node to Clean Object ---
+function transformSSRNode(node) {
+  if (!node) return { name: 'Unknown' };
+
+  // Market data
+  const market = node.market || {};
+  const state = market.state || {};
+  const stats = market.statistics || {};
+
+  const lowestAsk = state.lowestAsk ? state.lowestAsk.amount : null;
+  const highestBid = state.highestBid ? state.highestBid.amount : null;
+  const lastSale = stats.lastSale ? stats.lastSale.amount : null;
+  const salesLast72h = stats.last72Hours ? stats.last72Hours.salesCount : 0;
+
+  // Retail price from traits
   let retail = null;
-  if (hit.searchable_traits && hit.searchable_traits['Retail Price']) {
-    retail = parseFloat(hit.searchable_traits['Retail Price']);
-  } else if (hit.retail_price_cents) {
-    retail = hit.retail_price_cents / 100;
+  if (node.traits && Array.isArray(node.traits)) {
+    const retailTrait = node.traits.find(t => t.name === 'Retail Price');
+    if (retailTrait && retailTrait.value) {
+      retail = parseFloat(retailTrait.value.replace(/[^0-9.]/g, ''));
+    }
   }
 
-  // Market prices
-  const lowestAsk = hit.lowest_price_cents ? hit.lowest_price_cents / 100 : null;
-  const highestBid = hit.highest_bid_cents ? hit.highest_bid_cents / 100 : null;
-
-  // Last sale - handle both cents and dollars
-  let lastSale = null;
-  if (typeof hit.last_sale === 'number') {
-    lastSale = hit.last_sale > 500 ? hit.last_sale / 100 : hit.last_sale;
+  // Release date from traits
+  let releaseDate = '';
+  if (node.traits && Array.isArray(node.traits)) {
+    const releaseTrait = node.traits.find(t => t.name === 'Release Date');
+    if (releaseTrait) releaseDate = releaseTrait.value || '';
   }
 
-  // Spread
+  // Spread calculation
   let spread = null;
   let spreadPct = null;
   const marketPrice = lowestAsk || lastSale;
@@ -99,26 +168,29 @@ function transformHit(hit) {
     spreadPct = Math.round((spread / retail) * 100);
   }
 
+  // Media
+  const media = node.media || {};
+
   return {
-    id: hit.objectID || '',
-    name: hit.name || 'Unknown',
-    brand: hit.brand || '',
-    colorway: hit.colorway || '',
-    styleID: hit.style_id || hit.sku || '',
+    id: node.id || node.urlKey || '',
+    name: node.name || node.title || 'Unknown',
+    brand: node.brand || '',
+    colorway: node.colorway || '',
+    styleID: node.styleId || node.sku || '',
     retail: retail,
     lowestAsk: lowestAsk,
     highestBid: highestBid,
     lastSale: lastSale,
     spread: spread,
     spreadPct: spreadPct,
-    totalSales: hit.deadstock_sold || 0,
-    salesLast72h: hit.sales_last_72 || 0,
-    pricePremium: hit.price_premium || null,
-    thumbnail: hit.thumbnail_url || (hit.media ? hit.media.thumbUrl : '') || '',
-    image: hit.image_url || (hit.media ? hit.media.imageUrl : '') || '',
-    url: hit.url ? 'https://stockx.com/' + hit.url : '',
-    releaseDate: hit.release_date || '',
-    category: hit.product_category || 'sneakers',
+    totalSales: stats.totalSales || 0,
+    salesLast72h: salesLast72h,
+    pricePremium: null,
+    thumbnail: media.thumbUrl || media.smallImageUrl || '',
+    image: media.imageUrl || media.thumbUrl || '',
+    url: node.urlKey ? 'https://stockx.com/' + node.urlKey : '',
+    releaseDate: releaseDate,
+    category: node.productCategory || 'sneakers',
     source: 'stockx-live'
   };
 }
@@ -259,7 +331,7 @@ setInterval(() => {
 app.listen(PORT, () => {
   console.log('=== SolePing API ===');
   console.log('Port:', PORT);
-  console.log('Data: StockX Algolia (LIVE pricing)');
+  console.log('Data: StockX SSR (LIVE pricing)');
   console.log('Keep-alive: every 10 min');
-  console.log('====================');
+  console.log('=======================');
 });
